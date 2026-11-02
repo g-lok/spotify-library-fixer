@@ -1,0 +1,14 @@
+[tools]
+python = "3.14.3"
+poetry = "latest"
+
+[env]
+_.python.venv = "{{ config_root }}/.venv"
+
+[hooks]
+enter = """
+if [ -f "{{ config_root }}/poetry.lock" ] && [ ! -d "{{ config_root }}/.venv" ]; then
+  echo "mise: No .venv found. Bootstrapping with poetry install..."
+  mise exec poetry -- poetry install
+fi
+"""
