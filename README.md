@@ -15,55 +15,92 @@ Zotify credentials and `librespot`.
 - **Zotify Credentials Integration**: Automatically reuses existing
   `api_credentials.json` and `credentials.json` from Zotify
   (`~/.config/zotify/`). No re-authentication required.
+- **POSIX Compliant CLI**: Standard logging streams to `stderr`, data summaries
+  output to `stdout`. Compatible with standard shell redirection (`> file 2>&1`).
 
-## Installation & Setup
+## Installation
 
-Managed via Poetry and mise:
+### Via Pip / Pipx
+
+Install directly from GitHub:
 
 ```bash
+pip install git+https://github.com/g-lok/spotify-library-fixer
+```
+
+Or using `pipx` for isolated application environment:
+
+```bash
+pipx install git+https://github.com/g-lok/spotify-library-fixer
+```
+
+### From Source (Poetry + mise)
+
+Clone and install dependencies locally:
+
+```bash
+git clone https://github.com/g-lok/spotify-library-fixer.git
+cd spotify-library-fixer
 poetry install
 ```
 
-## Usage
+## First-Time Authorization
+
+To grant read and write library permissions (preventing rate limit errors when
+saving or un-liking tracks), run the interactive authorization helper:
+
+```bash
+spotify-fix --login
+```
+
+Follow the link printed in your terminal, approve permissions in your browser,
+and `~/.config/zotify/api_credentials.json` will be saved automatically.
+
+## Usage & Examples
 
 By default, `spotify-fix` runs in **Dry Run** mode (simulation without modifying
 your Spotify account).
 
-### Examples
-
-Run full cleanup pipeline in Dry Run mode:
+### Run Full Cleanup in Dry Run Mode
 
 ```bash
-poetry run spotify-fix --dry-run
+spotify-fix --dry-run
 ```
 
-Apply changes directly to Spotify account:
+### Apply Changes to Spotify Library
 
 ```bash
-poetry run spotify-fix --apply
+spotify-fix --apply
 ```
 
-Run specific cleanup tasks:
+### Run in Background with Shell Redirection
 
 ```bash
-# Relink reuploaded liked tracks only
-poetry run spotify-fix --fix-tracks
+PYTHONUNBUFFERED=1 spotify-fix --all --apply > ~/tmp/spotify_fix.log 2>&1 &
+```
+
+### Run Specific Tasks with Progress Bar
+
+```bash
+# Relink reuploaded liked tracks only with progress bar
+spotify-fix --fix-tracks --progress
 
 # Consolidate liked tracks into album likes
-poetry run spotify-fix --rollup-albums
+spotify-fix --rollup-albums --apply
 
-# Custom report output location
-poetry run spotify-fix -o ~/tmp/my_spotify_report.json
+# Export report to custom path
+spotify-fix -o ~/tmp/my_spotify_report.json
 ```
 
-## Options
+## CLI Options
 
-- `--login`: Run interactive OAuth PKCE authorization to grant read & write
-  library permissions.
+- `--login`: Run interactive OAuth PKCE authorization server to grant read &
+  write permissions.
 - `--api-creds <path>`: Path to Zotify `api_credentials.json` file.
 - `--creds <path>`: Path to Zotify `credentials.json` file.
 - `--apply` / `--no-dry-run`: Apply changes directly to your Spotify library.
 - `--dry-run`: Simulate changes without making API mutations (default).
+- `--progress`, `-P`: Display rsync-style progress indicator on `stderr`.
 - `--fix-tracks`: Scan and relink reuploaded liked tracks.
 - `--fix-albums`: Scan and relink reuploaded liked albums.
 - `--fix-playlists`: Scan and fix reuploaded tracks in playlists.

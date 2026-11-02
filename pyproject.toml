@@ -1,16 +1,22 @@
 [project]
 name = "spotify-fix"
 version = "0.1.0"
-description = ""
+description = "Utility tool to clean up reuploaded Spotify liked tracks, albums, and playlists using librespot and Zotify credentials."
 authors = [
-    {name = "G",email = "g@devnull.rip"}
+    {name = "G", email = "g@devnull.rip"}
 ]
+license = "MIT"
 readme = "README.md"
 requires-python = ">=3.12"
+keywords = ["spotify", "librespot", "zotify", "music", "cleanup", "playlist", "relink"]
 dependencies = [
     "librespot (>=0.0.10,<0.0.11)",
     "requests (>=2.34.2,<3.0.0)"
 ]
+
+[project.urls]
+Homepage = "https://github.com/g-lok/spotify-library-fixer"
+Repository = "https://github.com/g-lok/spotify-library-fixer"
 
 [tool.poetry]
 packages = [{include = "spotify_fix", from = "src"}]
