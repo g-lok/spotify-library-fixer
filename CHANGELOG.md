@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-11-12
+
+### Added in 0.2.1
+
+- **Standalone Bad Variant Audit & Purging (`--purge-variants`)**: Audits local
+  Zotify music library for standalone bad variant files ("Live", "Karaoke",
+  "Cover") downloaded during previous fallback searches. Compares local track
+  titles against official Spotify album tracklists to preserve legitimate
+  official album tracks while purging bad substitutions.
+- **Generic Default Music Path**: Replaced machine-specific fallback paths with
+  standard POSIX ~/Music/Zotify Music paths.
+
 ## [0.2.0] - 2026-11-12
 
 ### Added in 0.2.0

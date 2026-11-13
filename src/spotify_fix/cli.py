@@ -65,18 +65,28 @@ def parse_args(args: list[str] = None) -> argparse.Namespace:
         action="store_true",
         help="Consolidate liked tracks into album likes if full album is liked",
     )
+    default_music_dir = str(Path.home() / "Music" / "Zotify Music")
+
     parser.add_argument(
         "--purge-fallbacks",
         type=str,
         nargs="?",
-        const="/mnt/minidrive/zotify",
+        const=default_music_dir,
         default=None,
-        help="Purge duplicate fallback files (*_#.ogg) from Zotify music library directory (default: /mnt/minidrive/zotify)",
+        help="Purge duplicate fallback files (*_#.ogg) from Zotify music library directory (default: ~/Music/Zotify Music)",
+    )
+    parser.add_argument(
+        "--purge-variants",
+        type=str,
+        nargs="?",
+        const=default_music_dir,
+        default=None,
+        help="Audit and purge standalone bad variant files (live/karaoke/cover) from Zotify library if not on official album (default: ~/Music/Zotify Music)",
     )
     parser.add_argument(
         "--all",
         action="store_true",
-        help="Run all cleanup tasks (tracks, albums, playlists, album rollup, and fallback purging)",
+        help="Run all cleanup tasks (tracks, albums, playlists, album rollup, fallback purging, and variant purging)",
     )
     parser.add_argument(
         "--output",
@@ -140,7 +150,7 @@ def main():
 
     # Determine tasks to execute
     run_all = args.all or not (
-        args.fix_tracks or args.fix_albums or args.fix_playlists or args.rollup_albums or args.purge_fallbacks
+        args.fix_tracks or args.fix_albums or args.fix_playlists or args.rollup_albums or args.purge_fallbacks or args.purge_variants
     )
 
     if run_all or args.fix_tracks:
@@ -159,10 +169,17 @@ def main():
         logger.info("=== Scanning & Consolidating Album Rollups ===")
         pipeline.rollup_albums()
 
-    purge_path = args.purge_fallbacks or ("/mnt/minidrive/zotify" if run_all else None)
+    default_music_dir = Path.home() / "Music" / "Zotify Music"
+
+    purge_path = args.purge_fallbacks or (default_music_dir if args.all and default_music_dir.exists() else None)
     if purge_path:
         logger.info(f"=== Scanning & Purging Duplicate Fallback Files in {purge_path} ===")
         pipeline.purge_fallback_files(purge_path)
+
+    variant_path = args.purge_variants or (default_music_dir if args.all and default_music_dir.exists() else None)
+    if variant_path:
+        logger.info(f"=== Auditing & Purging Bad Variant Files in {variant_path} ===")
+        pipeline.purge_bad_variant_files(variant_path)
 
     # Generate Report
     report_file = pipeline.export_reports(report_path=args.output)

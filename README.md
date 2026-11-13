@@ -107,8 +107,10 @@ spotify-fix -o ~/tmp/my_spotify_report.json
 - `--rollup-albums`: Consolidate liked tracks into album likes if full album is
   liked.
 - `--purge-fallbacks [DIR]`: Purge duplicate fallback files (`*_#.ogg`) from
-  Zotify music library directory (default: `/mnt/minidrive/zotify`).
-- `--all`: Execute all fixes including fallback file purging (default).
+  Zotify music library directory (default: `~/Music/Zotify Music`).
+- `--purge-variants [DIR]`: Audit and purge standalone bad variant files (live,
+  remix, cover) if not present on official album (default: `~/Music/Zotify Music`).
+- `--all`: Execute all fixes including fallback and variant purging (default).
 - `-o, --output <path>`: JSON file path to write actions and unavailable items
   report.
 - `-v, --verbose`: Enable detailed debug logging.

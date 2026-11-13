@@ -286,6 +286,87 @@ class CleanerPipeline:
         logger.info(f"Fallback file purge complete. Total files purged: {purged_count}")
         return purged_count
 
+    def purge_bad_variant_files(self, library_path: Path | str) -> Tuple[int, int]:
+        """Scan Zotify music library for standalone bad variant files (live/karaoke/cover) and purge them if not on official album."""
+        library_dir = Path(library_path)
+        if not library_dir.exists():
+            logger.warning(f"Library path {library_dir} does not exist. Skipping variant purge.")
+            return 0, 0
+
+        logger.info(f"Auditing {library_dir} for standalone bad variant files (live/karaoke/cover)...")
+        import re
+
+        variant_pattern = re.compile(r"\b(live|karaoke|cover)\b", re.IGNORECASE)
+        album_cache: Dict[str, Any] = {}
+
+        bad_variants_purged = 0
+        good_variants_preserved = 0
+
+        for file_path in library_dir.rglob("*"):
+            if not file_path.is_file() or file_path.suffix.lower() not in {".ogg", ".mp3", ".flac", ".m4a"}:
+                continue
+
+            fname = file_path.name
+            rel_path = file_path.relative_to(library_dir)
+            parts = rel_path.parts
+
+            if len(parts) < 3:
+                continue
+
+            artist_name = parts[0]
+            album_dir = parts[1]
+
+            if variant_pattern.search(fname) and not variant_pattern.search(album_dir):
+                clean_alb_name = re.sub(r"\s*\(\d{4}\)$", "", album_dir).strip()
+                cache_key = f"{artist_name}::{clean_alb_name}"
+
+                if cache_key not in album_cache:
+                    album_obj = self.client.search_playable_album(clean_alb_name, artist_name)
+                    album_cache[cache_key] = album_obj
+                else:
+                    album_obj = album_cache[cache_key]
+
+                is_official_variant = False
+                if album_obj:
+                    official_tracks = list(self.client.get_paginated(f"/albums/{album_obj.id}/tracks", params={"market": "from_token"}))
+                    for ot in official_tracks:
+                        ot_name = ot.get("name", "")
+                        if variant_pattern.search(ot_name):
+                            if ot_name.lower() in fname.lower() or fname.lower().startswith(ot_name.lower()[:10]):
+                                is_official_variant = True
+                                break
+
+                if is_official_variant:
+                    logger.info(f"[KEEP GOOD VARIANT] Preserving official track: {rel_path}")
+                    good_variants_preserved += 1
+                else:
+                    logger.warning(f"[BAD SUBSTITUTION] Detected bad variant substitution: {rel_path}")
+                    if not self.dry_run:
+                        try:
+                            file_path.unlink()
+                            logger.info(f"Purged bad variant file: {fname}")
+                        except Exception as e:
+                            logger.error(f"Failed to delete {file_path}: {e}")
+
+                    self.actions.append(
+                        ActionLog(
+                            action="PURGE_BAD_VARIANT_FILE",
+                            item_type="file",
+                            old_id=str(file_path),
+                            new_id=None,
+                            name=fname,
+                            artist=artist_name,
+                            details=f"Purged standalone bad variant substitution file {fname}",
+                            applied=not self.dry_run,
+                        )
+                    )
+                    bad_variants_purged += 1
+
+        logger.info(
+            f"Variant audit complete. Bad variants purged: {bad_variants_purged}, Good variants preserved: {good_variants_preserved}"
+        )
+        return bad_variants_purged, good_variants_preserved
+
     def fix_reuploaded_playlists(self) -> Tuple[int, int]:
         """Scan user owned/editable playlists and fix unplayable tracks."""
         logger.info("Scanning user playlists for unplayable tracks...")
@@ -393,6 +474,9 @@ class CleanerPipeline:
                 ),
                 "purged_fallback_files": sum(
                     1 for a in self.actions if a.action == "PURGE_FALLBACK_FILE"
+                ),
+                "purged_bad_variant_files": sum(
+                    1 for a in self.actions if a.action == "PURGE_BAD_VARIANT_FILE"
                 ),
             },
             "actions": [a.__dict__ for a in self.actions],

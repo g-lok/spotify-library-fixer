@@ -220,3 +220,34 @@ def test_export_reports(tmp_path):
     result_path = pipeline.export_reports(report_path=out_file)
 
     assert result_path.exists()
+
+
+def test_purge_bad_variant_files(tmp_path):
+    mock_client = MagicMock()
+    
+    # Setup mock album metadata
+    official_album = Album(id="alb1", uri="spotify:album:alb1", name="Studio Album", artists=["Artist"], total_tracks=2, is_playable=True)
+    mock_client.search_playable_album.return_value = official_album
+    # Official tracks only have "Studio Track 1" and "02 - Mutilation Colony-Excerpt - Live"
+    mock_client.get_paginated.return_value = [
+        {"name": "Studio Track 1"},
+        {"name": "02 - Mutilation Colony-Excerpt - Live"}
+    ]
+
+    # Create local files structure: Artist / Studio Album (2020) / ...
+    album_dir = tmp_path / "Artist" / "Studio Album (2020)"
+    album_dir.mkdir(parents=True)
+
+    good_variant_file = album_dir / "02 - Mutilation Colony-Excerpt - Live.ogg"
+    bad_variant_file = album_dir / "01 - Studio Track 1 - Live Version.ogg"
+
+    good_variant_file.write_text("audio data")
+    bad_variant_file.write_text("audio data")
+
+    pipeline = CleanerPipeline(client=mock_client, dry_run=False)
+    purged, preserved = pipeline.purge_bad_variant_files(tmp_path)
+
+    assert purged == 1
+    assert preserved == 1
+    assert good_variant_file.exists()
+    assert not bad_variant_file.exists()
