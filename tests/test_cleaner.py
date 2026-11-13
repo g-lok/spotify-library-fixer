@@ -74,9 +74,10 @@ def test_fix_reuploaded_liked_albums_with_unplayable_tracks():
     mock_client.get_all_liked_albums.return_value = [playable_album, album_with_unplayable_tracks]
     mock_client.get_album_details.side_effect = lambda aid: playable_album if aid == "a1" else album_with_unplayable_tracks
 
-    # a1 has all playable tracks, a2 has 1 unplayable track
     def mock_get_paginated(endpoint, params=None):
-        if "/albums/a1/tracks" in endpoint:
+        if endpoint == "/me/albums":
+            return [playable_album, album_with_unplayable_tracks]
+        elif "/albums/a1/tracks" in endpoint:
             return [{"id": "t1", "is_playable": True}]
         elif "/albums/a2/tracks" in endpoint:
             return [{"id": "t2", "is_playable": False}]
@@ -104,7 +105,13 @@ def test_fix_reuploaded_liked_albums_unavailable_no_match():
 
     mock_client.get_all_liked_albums.return_value = [unplayable_album]
     mock_client.get_album_details.return_value = unplayable_album
-    mock_client.get_paginated.return_value = [{"id": "t1", "is_playable": False}]
+    
+    def mock_get_paginated(endpoint, params=None):
+        if endpoint == "/me/albums":
+            return [unplayable_album]
+        return [{"id": "t1", "is_playable": False}]
+
+    mock_client.get_paginated.side_effect = mock_get_paginated
     mock_client.search_playable_album.return_value = None
 
     pipeline = CleanerPipeline(client=mock_client, dry_run=True)
@@ -115,6 +122,21 @@ def test_fix_reuploaded_liked_albums_unavailable_no_match():
     assert len(pipeline.unavailable_items) == 1
     assert pipeline.unavailable_items[0].id == "a2"
     assert pipeline.unavailable_items[0].name == "Lost Album"
+
+
+def test_purge_fallback_files(tmp_path):
+    mock_client = MagicMock()
+    pipeline = CleanerPipeline(client=mock_client, dry_run=False)
+
+    file_orig = tmp_path / "01 - Track.ogg"
+    file_fallback = tmp_path / "01 - Track_1.ogg"
+    file_orig.write_text("audio data")
+    file_fallback.write_text("fallback data")
+
+    purged = pipeline.purge_fallback_files(tmp_path)
+    assert purged == 1
+    assert not file_fallback.exists()
+    assert file_orig.exists()
 
 
 def test_fix_reuploaded_playlists_ownership_filtering():

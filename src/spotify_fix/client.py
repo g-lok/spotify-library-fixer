@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import difflib
 import logging
+import re
 import time
 import requests
 from typing import List, Dict, Any, Optional, Generator
@@ -10,6 +12,74 @@ from spotify_fix.models import Track, Album
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.spotify.com/v1"
+
+
+def normalize_title(s: str) -> str:
+    s = s.lower()
+    s = re.sub(r"\(.*?\)|\[.*?\]", "", s)
+    s = re.sub(r"[^a-z0-9\s]", "", s)
+    return s.strip()
+
+
+def has_unwanted_variant_keywords(orig_name: str, candidate_name: str) -> bool:
+    orig_lower = orig_name.lower()
+    cand_lower = candidate_name.lower()
+    variant_keywords = ["live", "remix", "rework", "acoustic", "cover", "karaoke", "instrumental", "tribute"]
+    for kw in variant_keywords:
+        if kw in cand_lower and kw not in orig_lower:
+            return True
+    return False
+
+
+def calculate_match_score(
+    orig_name: str,
+    orig_artist: str,
+    candidate: Track | Album,
+    orig_duration_ms: int = 0,
+    orig_id: Optional[str] = None,
+) -> float:
+    # Reject candidate if same ID as target
+    if orig_id and candidate.id == orig_id:
+        return 0.0
+
+    # Reject if candidate has unwanted variants ("Live", "Remix", etc.)
+    if has_unwanted_variant_keywords(orig_name, candidate.name):
+        return 0.0
+
+    # Title similarity
+    n_orig = normalize_title(orig_name)
+    n_cand = normalize_title(candidate.name)
+    if not n_orig or not n_cand:
+        title_score = difflib.SequenceMatcher(None, orig_name.lower(), candidate.name.lower()).ratio()
+    else:
+        title_score = difflib.SequenceMatcher(None, n_orig, n_cand).ratio()
+
+    if title_score < 0.45:
+        return 0.0
+
+    # Artist match check
+    orig_artists = [a.lower().strip() for a in orig_artist.split(",") if a.strip()]
+    cand_artists = [a.lower().strip() for a in candidate.artists]
+    
+    artist_match = False
+    for oa in orig_artists:
+        for ca in cand_artists:
+            if oa in ca or ca in oa or difflib.SequenceMatcher(None, oa, ca).ratio() > 0.6:
+                artist_match = True
+                break
+        if artist_match:
+            break
+
+    if not artist_match:
+        return 0.0
+
+    # Duration tolerance for tracks
+    if isinstance(candidate, Track) and orig_duration_ms > 0 and candidate.duration_ms > 0:
+        duration_diff_sec = abs(candidate.duration_ms - orig_duration_ms) / 1000.0
+        if duration_diff_sec > 25.0:
+            return 0.0
+
+    return title_score
 
 
 class SpotifyClient:
@@ -250,41 +320,89 @@ class SpotifyClient:
         data = self.request("GET", "/me")
         return data.get("id") if data else None
 
-    def search_playable_track(self, name: str, artist: str) -> Optional[Track]:
-        """Search Spotify for an active, playable version of a track."""
+    def search_playable_track(
+        self, name: str, artist: str, orig_track: Optional[Track] = None
+    ) -> Optional[Track]:
+        """Search Spotify for an active, playable version of a track with quality scoring."""
         clean_name = name.replace('"', '')
         clean_artist = artist.replace('"', '')
-        query = f'track:"{clean_name}" artist:"{clean_artist}"'
-        
-        data = self.request("GET", "/search", params={"q": query, "type": "track", "limit": 10, "market": "from_token"})
-        if not data or "tracks" not in data or not data["tracks"].get("items"):
-            # Try looser search query if strict search yields no results
-            query = f"{clean_name} {clean_artist}"
+        orig_id = orig_track.id if orig_track else None
+        orig_duration = orig_track.duration_ms if orig_track else 0
+
+        queries = [
+            f'track:"{clean_name}" artist:"{clean_artist}"',
+            f"{clean_name} {clean_artist}",
+        ]
+
+        # Stripped parenthetical query if name had (Remaster), (Live), etc.
+        stripped_name = normalize_title(clean_name)
+        if stripped_name and stripped_name != clean_name.lower():
+            queries.append(f'track:"{stripped_name}" artist:"{clean_artist}"')
+
+        best_candidate: Optional[Track] = None
+        best_score = 0.0
+
+        for query in queries:
             data = self.request("GET", "/search", params={"q": query, "type": "track", "limit": 10, "market": "from_token"})
+            if data and "tracks" in data and "items" in data["tracks"]:
+                for item in data["tracks"]["items"]:
+                    t = Track.from_dict(item)
+                    if not t.is_playable:
+                        continue
+                    score = calculate_match_score(
+                        orig_name=name,
+                        orig_artist=artist,
+                        candidate=t,
+                        orig_duration_ms=orig_duration,
+                        orig_id=orig_id,
+                    )
+                    if score > best_score:
+                        best_score = score
+                        best_candidate = t
+                if best_candidate and best_score >= 0.7:
+                    return best_candidate
 
-        if data and "tracks" in data and "items" in data["tracks"]:
-            for item in data["tracks"]["items"]:
-                t = Track.from_dict(item)
-                if t.is_playable:
-                    return t
+        return best_candidate if best_score >= 0.45 else None
 
-        return None
-
-    def search_playable_album(self, name: str, artist: str) -> Optional[Album]:
-        """Search Spotify for an active, playable version of an album."""
+    def search_playable_album(
+        self, name: str, artist: str, orig_album_id: Optional[str] = None
+    ) -> Optional[Album]:
+        """Search Spotify for an active, playable version of an album with quality scoring."""
         clean_name = name.replace('"', '')
         clean_artist = artist.replace('"', '')
-        query = f'album:"{clean_name}" artist:"{clean_artist}"'
 
-        data = self.request("GET", "/search", params={"q": query, "type": "album", "limit": 10, "market": "from_token"})
-        if not data or "albums" not in data or not data["albums"].get("items"):
-            query = f"{clean_name} {clean_artist}"
+        queries = [
+            f'album:"{clean_name}" artist:"{clean_artist}"',
+            f"{clean_name} {clean_artist}",
+        ]
+
+        stripped_name = normalize_title(clean_name)
+        if stripped_name and stripped_name != clean_name.lower():
+            queries.append(f'album:"{stripped_name}" artist:"{clean_artist}"')
+
+        best_candidate: Optional[Album] = None
+        best_score = 0.0
+
+        for query in queries:
             data = self.request("GET", "/search", params={"q": query, "type": "album", "limit": 10, "market": "from_token"})
+            if data and "albums" in data and "items" in data["albums"]:
+                for item in data["albums"]["items"]:
+                    a = Album.from_dict(item)
+                    if not a.is_playable:
+                        continue
+                    score = calculate_match_score(
+                        orig_name=name,
+                        orig_artist=artist,
+                        candidate=a,
+                        orig_id=orig_album_id,
+                    )
+                    if score > best_score:
+                        best_score = score
+                        best_candidate = a
+                if best_candidate and best_score >= 0.7:
+                    return self.get_album_details(best_candidate.id)
 
-        if data and "albums" in data and "items" in data["albums"]:
-            for item in data["albums"]["items"]:
-                a = Album.from_dict(item)
-                if a.is_playable:
-                    return self.get_album_details(a.id)
+        if best_candidate and best_score >= 0.45:
+            return self.get_album_details(best_candidate.id)
 
         return None

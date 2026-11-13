@@ -1,6 +1,6 @@
 [project]
 name = "spotify-fix"
-version = "0.1.0"
+version = "0.2.0"
 description = "Utility tool to clean up reuploaded Spotify liked tracks, albums, and playlists using librespot and Zotify credentials."
 authors = [
     {name = "G", email = "g@devnull.rip"}

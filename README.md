@@ -106,7 +106,9 @@ spotify-fix -o ~/tmp/my_spotify_report.json
 - `--fix-playlists`: Scan and fix reuploaded tracks in playlists.
 - `--rollup-albums`: Consolidate liked tracks into album likes if full album is
   liked.
-- `--all`: Execute all fixes (default).
+- `--purge-fallbacks [DIR]`: Purge duplicate fallback files (`*_#.ogg`) from
+  Zotify music library directory (default: `/mnt/minidrive/zotify`).
+- `--all`: Execute all fixes including fallback file purging (default).
 - `-o, --output <path>`: JSON file path to write actions and unavailable items
   report.
 - `-v, --verbose`: Enable detailed debug logging.

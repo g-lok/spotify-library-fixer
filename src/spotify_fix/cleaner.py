@@ -43,7 +43,7 @@ class CleanerPipeline:
             tracker.update(idx, item_info=t.name)
             logger.info(f"[{idx}/{len(unplayable_tracks)}] Searching replacement for: '{t.name}' by {artist_str} (ID: {t.id})")
 
-            replacement = self.client.search_playable_track(t.name, artist_str)
+            replacement = self.client.search_playable_track(t.name, artist_str, orig_track=t)
             if replacement:
                 logger.info(f"-> Found replacement: {replacement.id} for '{t.name}'")
                 self.client.like_tracks([replacement.id], dry_run=self.dry_run)
@@ -100,8 +100,12 @@ class CleanerPipeline:
 
         for album_id, tracks in album_tracks_map.items():
             evaluated += 1
-            if evaluated % 100 == 0:
+            if evaluated % 50 == 0:
                 logger.info(f"Evaluated {evaluated}/{len(album_tracks_map)} candidate albums...")
+
+            # Fast optimization: skip checking albums with only 1 liked track unless single-track album
+            if len(tracks) < 2:
+                continue
 
             album = self.client.get_album_details(album_id)
             if not album or not album.track_ids or album.total_tracks == 0:
@@ -138,34 +142,50 @@ class CleanerPipeline:
         return rolled_up_count
 
     def fix_reuploaded_liked_albums(self) -> Tuple[int, int]:
-        """Scan liked albums for unplayable albums/tracks and attempt relinking."""
+        """Scan liked albums for unplayable albums/tracks and attempt relinking or unliking."""
         logger.info("Scanning liked albums for unplayable or reuploaded albums...")
-        albums = self.client.get_all_liked_albums()
+        raw_items = list(self.client.get_paginated("/me/albums", params={"market": "from_token"}))
+        album_items = raw_items if raw_items else self.client.get_all_liked_albums()
 
         relinked_count = 0
         unavailable_count = 0
-        tracker = ProgressTracker("Fix Albums", len(albums), enabled=self.progress_enabled)
+        unplayable_albums: List[Tuple[Album, bool]] = []
 
-        for idx, a in enumerate(albums, 1):
+        for item in album_items:
+            if isinstance(item, Album):
+                a = item
+                tracks = list(self.client.get_paginated(f"/albums/{a.id}/tracks", params={"market": "from_token"}))
+                has_unplayable = not a.is_playable or any(
+                    isinstance(t, dict) and (not t.get("is_playable", True) or "restrictions" in t) for t in tracks
+                )
+            elif isinstance(item, dict):
+                alb_dict = item.get("album", item)
+                a = Album.from_dict(alb_dict)
+                tracks_items = alb_dict.get("tracks", {}).get("items", [])
+                has_unplayable = not a.is_playable or any(
+                    isinstance(t, dict) and (not t.get("is_playable", True) or "restrictions" in t) for t in tracks_items
+                )
+                if not has_unplayable and (len(tracks_items) < a.total_tracks or not tracks_items):
+                    tracks = list(self.client.get_paginated(f"/albums/{a.id}/tracks", params={"market": "from_token"}))
+                    has_unplayable = any(
+                        isinstance(t, dict) and (not t.get("is_playable", True) or "restrictions" in t) for t in tracks
+                    )
+
+            if has_unplayable:
+                unplayable_albums.append((a, not a.is_playable))
+
+        logger.info(f"Found {len(unplayable_albums)} albums with unplayable content out of {len(album_items)} total liked albums.")
+        tracker = ProgressTracker("Fix Albums", len(unplayable_albums), enabled=self.progress_enabled)
+
+        for idx, (a, is_fully_unplayable) in enumerate(unplayable_albums, 1):
             tracker.update(idx, item_info=a.name)
-            album_details = self.client.get_album_details(a.id)
-            if not album_details:
-                continue
-
-            # Check album playability or if any tracks inside album are unplayable
-            tracks = list(self.client.get_paginated(f"/albums/{a.id}/tracks", params={"market": "from_token"}))
-            has_unplayable = not a.is_playable or any(not t.get("is_playable", True) for t in tracks)
-
-            if not has_unplayable:
-                continue
-
             artist_str = ", ".join(a.artists) if a.artists else "Unknown Artist"
-            logger.info(f"Unplayable album/tracks detected: '{a.name}' by {artist_str} (ID: {a.id})")
+            logger.info(f"[{idx}/{len(unplayable_albums)}] Processing unplayable album: '{a.name}' by {artist_str} (ID: {a.id})")
 
-            replacement = self.client.search_playable_album(a.name, artist_str)
+            replacement = self.client.search_playable_album(a.name, artist_str, orig_album_id=a.id)
             if replacement and replacement.id != a.id:
                 logger.info(
-                    f"Found replacement album for '{a.name}': {replacement.id} (Old: {a.id})"
+                    f"-> Found replacement album for '{a.name}': {replacement.id} (Old: {a.id})"
                 )
 
                 self.client.like_albums([replacement.id], dry_run=self.dry_run)
@@ -184,8 +204,22 @@ class CleanerPipeline:
                     )
                 )
                 relinked_count += 1
-            elif not replacement:
-                logger.warning(f"No replacement found for album: '{a.name}' by {artist_str}")
+            else:
+                logger.warning(f"-> No valid replacement found for album: '{a.name}' by {artist_str}. Unliking album.")
+                self.client.unlike_albums([a.id], dry_run=self.dry_run)
+
+                self.actions.append(
+                    ActionLog(
+                        action="UNLIKE_UNPLAYABLE_ALBUM",
+                        item_type="album",
+                        old_id=a.id,
+                        new_id=None,
+                        name=a.name,
+                        artist=artist_str,
+                        details=f"Unliked unplayable album ID {a.id} (no valid Spotify replacement found)",
+                        applied=not self.dry_run,
+                    )
+                )
                 self.unavailable_items.append(
                     UnavailableItem(
                         item_type="album",
@@ -193,16 +227,64 @@ class CleanerPipeline:
                         uri=a.uri,
                         name=a.name,
                         artist=artist_str,
-                        reason="Album or tracks unplayable and no replacement match found on Spotify",
+                        reason="Album unplayable and unliked (no replacement match found on Spotify)",
                     )
                 )
                 unavailable_count += 1
 
-        tracker.finish(f"Relinked: {relinked_count}, Unavailable: {unavailable_count}")
+        tracker.finish(f"Relinked: {relinked_count}, Unavailable/Unliked: {unavailable_count}")
         logger.info(
-            f"Liked albums scan complete. Relinked: {relinked_count}, Unavailable: {unavailable_count}"
+            f"Liked albums scan complete. Relinked: {relinked_count}, Unavailable/Unliked: {unavailable_count}"
         )
         return relinked_count, unavailable_count
+
+    def purge_fallback_files(self, library_path: Path | str) -> int:
+        """Scan Zotify audio library directory and purge duplicate fallback files (*_#.ogg)."""
+        library_dir = Path(library_path)
+        if not library_dir.exists():
+            logger.warning(f"Library path {library_dir} does not exist. Skipping fallback purge.")
+            return 0
+
+        logger.info(f"Scanning {library_dir} for duplicate fallback files (*_#.ogg)...")
+        purged_count = 0
+        import re
+
+        fallback_pattern = re.compile(r"^(.*?)(_\d+)(\.[a-zA-Z0-9]+)$")
+
+        for file_path in library_dir.rglob("*"):
+            if not file_path.is_file():
+                continue
+
+            match = fallback_pattern.match(file_path.name)
+            if match:
+                base_name, suffix, ext = match.groups()
+                orig_file_name = f"{base_name}{ext}"
+                orig_file_path = file_path.parent / orig_file_name
+
+                logger.info(f"Found duplicate fallback file: {file_path.relative_to(library_dir)}")
+                if not self.dry_run:
+                    try:
+                        file_path.unlink()
+                        logger.info(f"Purged: {file_path.name}")
+                    except Exception as e:
+                        logger.error(f"Failed to delete {file_path}: {e}")
+                
+                self.actions.append(
+                    ActionLog(
+                        action="PURGE_FALLBACK_FILE",
+                        item_type="file",
+                        old_id=str(file_path),
+                        new_id=str(orig_file_path) if orig_file_path.exists() else None,
+                        name=file_path.name,
+                        artist="Local Library",
+                        details=f"Purged duplicate fallback audio file {file_path.name}",
+                        applied=not self.dry_run,
+                    )
+                )
+                purged_count += 1
+
+        logger.info(f"Fallback file purge complete. Total files purged: {purged_count}")
+        return purged_count
 
     def fix_reuploaded_playlists(self) -> Tuple[int, int]:
         """Scan user owned/editable playlists and fix unplayable tracks."""
@@ -242,7 +324,7 @@ class CleanerPipeline:
                     f"Unplayable playlist track in '{playlist_name}': '{t.name}' by {artist_str} (ID: {t.id})"
                 )
 
-                replacement = self.client.search_playable_track(t.name, artist_str)
+                replacement = self.client.search_playable_track(t.name, artist_str, orig_track=t)
                 if replacement:
                     logger.info(
                         f"Replacing unplayable track in playlist '{playlist_name}': {t.id} -> {replacement.id}"
@@ -304,9 +386,13 @@ class CleanerPipeline:
                 "total_actions": len(self.actions),
                 "relinked_tracks": sum(1 for a in self.actions if a.action == "RELINK_TRACK"),
                 "relinked_albums": sum(1 for a in self.actions if a.action == "RELINK_ALBUM"),
+                "unliked_unplayable_albums": sum(1 for a in self.actions if a.action == "UNLIKE_UNPLAYABLE_ALBUM"),
                 "rolled_up_albums": sum(1 for a in self.actions if a.action == "ROLLUP_ALBUM"),
                 "fixed_playlist_tracks": sum(
                     1 for a in self.actions if a.action == "FIX_PLAYLIST_TRACK"
+                ),
+                "purged_fallback_files": sum(
+                    1 for a in self.actions if a.action == "PURGE_FALLBACK_FILE"
                 ),
             },
             "actions": [a.__dict__ for a in self.actions],

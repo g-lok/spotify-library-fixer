@@ -66,9 +66,17 @@ def parse_args(args: list[str] = None) -> argparse.Namespace:
         help="Consolidate liked tracks into album likes if full album is liked",
     )
     parser.add_argument(
+        "--purge-fallbacks",
+        type=str,
+        nargs="?",
+        const="/mnt/minidrive/zotify",
+        default=None,
+        help="Purge duplicate fallback files (*_#.ogg) from Zotify music library directory (default: /mnt/minidrive/zotify)",
+    )
+    parser.add_argument(
         "--all",
         action="store_true",
-        help="Run all cleanup tasks (tracks, albums, playlists, and album rollup)",
+        help="Run all cleanup tasks (tracks, albums, playlists, album rollup, and fallback purging)",
     )
     parser.add_argument(
         "--output",
@@ -132,7 +140,7 @@ def main():
 
     # Determine tasks to execute
     run_all = args.all or not (
-        args.fix_tracks or args.fix_albums or args.fix_playlists or args.rollup_albums
+        args.fix_tracks or args.fix_albums or args.fix_playlists or args.rollup_albums or args.purge_fallbacks
     )
 
     if run_all or args.fix_tracks:
@@ -150,6 +158,11 @@ def main():
     if run_all or args.rollup_albums:
         logger.info("=== Scanning & Consolidating Album Rollups ===")
         pipeline.rollup_albums()
+
+    purge_path = args.purge_fallbacks or ("/mnt/minidrive/zotify" if run_all else None)
+    if purge_path:
+        logger.info(f"=== Scanning & Purging Duplicate Fallback Files in {purge_path} ===")
+        pipeline.purge_fallback_files(purge_path)
 
     # Generate Report
     report_file = pipeline.export_reports(report_path=args.output)
